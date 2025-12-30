@@ -29,7 +29,6 @@ contract SwapTest is Test {
         uint256 expectedUsdcAmount = 1000;
 
         console.log("----- Initial State -----");
-        console.log("Rate: 1 REIT = 1000 USDC");
         console.log("User Address: ", user);
         console.log("User REIT Balance: ", reit.balanceOf(user));
         console.log("User USDC Balance: ", usdc.balanceOf(user));
@@ -67,5 +66,48 @@ contract SwapTest is Test {
         console.log("User USDC Balance: ", usdc.balanceOf(user));
         console.log("Expected USDC: ", expectedUsdcAmount);
         console.log("Swap successful: 1:1000 ratio maintained");
+    }
+
+    function testFuzz_SwapREITToUSDC(uint256 reitAmount) public {
+        // Constraint to prevent overflow when calculating expectedUsdcAmount
+        // reitAmount * 1000 must fit in uint256
+        vm.assume(reitAmount > 0 && reitAmount < type(uint256).max / 1000);
+
+        // Expected USDC = reitAmount * 1000
+        uint256 expectedUsdcAmount = reitAmount * 1000;
+
+        console.log("----- [Fuzz] Initial State -----");
+        console.log("Fuzz Input REIT Amount: ", reitAmount);
+
+        // Mint REIT to user
+        reit.mint(user, reitAmount);
+
+        assertEq(reit.balanceOf(user), reitAmount, "Mint failed");
+        assertEq(usdc.balanceOf(user), 0, "USDC should be 0");
+
+        // Prank as user to call swap
+        vm.startPrank(user);
+
+        console.log("----- [Fuzz] Swapping -----");
+        swap.swapREITToUSDC(reitAmount);
+
+        vm.stopPrank();
+
+        // Check balances
+        assertEq(reit.balanceOf(user), 0, "REIT not burned");
+        assertEq(
+            usdc.balanceOf(user),
+            expectedUsdcAmount,
+            "USDC amount incorrect based on ratio"
+        );
+
+        console.log("----- [Fuzz] Final State -----");
+        console.log("User USDC Balance: ", usdc.balanceOf(user));
+        console.log("Expected USDC: ", expectedUsdcAmount);
+    }
+
+    // Demonstrates the logs with a specific "random-like" value
+    function test_DemoSwapLogs() public {
+        testFuzz_SwapREITToUSDC(25);
     }
 }
