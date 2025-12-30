@@ -2,5 +2,8 @@
 src = "src"
 out = "out"
 libs = ["lib"]
+sender = "0x0b1d01a4341f03df15446118727c615027765f29"
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+[rpc_endpoints]
+mantleSepolia = "https://rpc.sepolia.mantle.xyz"

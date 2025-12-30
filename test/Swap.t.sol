@@ -1,71 +1,113 @@
-// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.13;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
 
-import {Test, console} from "forge-std/Test.sol";
-import {Swap} from "../src/Swap.sol";
-import {MockUSDC} from "../src/MockUSDC.sol";
-import {MockREIT} from "../src/MockREIT.sol";
+import "../lib/forge-std/src/Test.sol";
+import "../src/Swap.sol";
+import "../src/MockUSDY.sol";
+import "../src/MockREIT.sol";
+import "../src/KYCOracle.sol";
 
 contract SwapTest is Test {
-    Swap public swap;
-    MockUSDC public usdc;
-    MockREIT public reit;
+    Swap swap;
+    MockUSDY usdy;
+    MockREIT reit;
+    KYCOracle kycOracle;
 
-    address public user = address(1);
+    address owner = makeAddr("owner");
+    address alice = makeAddr("alice");
+    address bob = makeAddr("bob");
 
     function setUp() public {
-        usdc = new MockUSDC();
+        vm.startPrank(owner);
+
+        usdy = new MockUSDY();
         reit = new MockREIT();
-        swap = new Swap(address(usdc), address(reit));
-    }
+        kycOracle = new KYCOracle();
+        swap = new Swap(address(usdy), address(reit), address(kycOracle));
 
-    function test_SwapREITToUSDC_Ratio() public {
-        // Ratio 1 REIT : 1000 USDC
+        // Setup Liquidity
+        // Price 1000 USDY = 1 REIT
+        // Reserve: 100,000 USDY : 100 REIT
+        uint256 usdyLiq = 100_000 ether;
+        uint256 reitLiq = 100 ether;
 
-        // Let's use 1 unit of REIT (1 * 10^18)
-        uint256 reitAmount = 1;
+        usdy.mint(owner, usdyLiq);
+        reit.mint(owner, reitLiq);
 
-        // Expected USDC = 1 * 1000 = 1000 * 10^18
-        uint256 expectedUsdcAmount = 1000;
+        usdy.approve(address(swap), usdyLiq);
+        reit.approve(address(swap), reitLiq);
 
-        console.log("----- Initial State -----");
-        console.log("Rate: 1 REIT = 1000 USDC");
-        console.log("User Address: ", user);
-        console.log("User REIT Balance: ", reit.balanceOf(user));
-        console.log("User USDC Balance: ", usdc.balanceOf(user));
-
-        // Mint REIT to user
-        reit.mint(user, reitAmount);
-
-        assertEq(reit.balanceOf(user), reitAmount, "Mint failed");
-        assertEq(usdc.balanceOf(user), 0, "USDC should be 0");
-
-        console.log("----- After Minting REIT -----");
-        console.log("Minted REIT Amount: ", reitAmount);
-        console.log("User REIT Balance: ", reit.balanceOf(user));
-        console.log("User USDC Balance: ", usdc.balanceOf(user));
-
-        // Prank as user to call swap
-        vm.startPrank(user);
-        console.log("----- Performing Swap (REIT -> USDC) -----");
-        console.log("Swapping ", reitAmount, " REIT");
-
-        swap.swapREITToUSDC(reitAmount);
+        swap.addLiquidity(usdyLiq, reitLiq);
 
         vm.stopPrank();
+    }
 
-        // Check balances
-        assertEq(reit.balanceOf(user), 0, "REIT not burned");
-        assertEq(
-            usdc.balanceOf(user),
-            expectedUsdcAmount,
-            "USDC amount incorrect based on ratio"
-        );
+    function test_SwapAccredited() public {
+        vm.startPrank(alice);
 
-        console.log("----- Final State After Swap -----");
-        console.log("User REIT Balance: ", reit.balanceOf(user));
-        console.log("User USDC Balance: ", usdc.balanceOf(user));
-        console.log("Expected USDC: ", expectedUsdcAmount);
-        console.log("Swap successful: 1:1000 ratio maintained");
+        // 1. Get Money
+        usdy.mint(alice, 2000 ether);
+        usdy.approve(address(swap), 2000 ether);
+
+        // 2. Get Accredited
+        kycOracle.setAccredited(alice, true);
+
+        // 3. Swap
+        // Swap 1000 USDY for REIT
+        uint256 amountIn = 1000 ether;
+
+        uint256 amountOut = swap.swap(address(usdy), amountIn, 0);
+
+        assertGt(amountOut, 0.9 ether);
+        assertLt(amountOut, 1.0 ether);
+        assertEq(reit.balanceOf(alice), amountOut);
+
+        vm.stopPrank();
+    }
+
+    function test_RevertIf_SwapNotAccredited() public {
+        vm.startPrank(bob);
+
+        usdy.mint(bob, 1000 ether);
+        usdy.approve(address(swap), 1000 ether);
+
+        // Bob is NOT accredited
+        vm.expectRevert("NOT ACCREDITED");
+        swap.swap(address(usdy), 1000 ether, 0);
+
+        vm.stopPrank();
+    }
+
+    function test_RevertIf_PriceImpactTooHigh() public {
+        vm.startPrank(alice);
+        kycOracle.setAccredited(alice, true);
+
+        // Try to swap HUGE amount that shifts price beyond 5%
+        // Liquidity is 100k USDY.
+        usdy.mint(alice, 50_000 ether);
+        usdy.approve(address(swap), 50_000 ether);
+
+        // Price check is:
+        // 950 <= amountIn/amountOut <= 1050
+        // When swapping huge USDY, amountOut diminishes (slippage).
+        // So amountIn/amountOut becomes VERY LARGE.
+        // e.g. 10,000 / 5 => 2000.
+        // 2000 > 1050.
+        // Revert "Price above 1050". (Wait, "Price out of bounds" or "Price above 1050" from my code logic?)
+        // My code: require(amountIn <= 1050 * amountOut, "Price above 1050");
+        // If amountIn=50k, amountOut=33k. 50k <= 1050*33k = 34k??? No. 50k > 34k.
+        // Wait. 1050 * 33k = ~34,650k??
+        // 50,000 <= 34,650,000 ??
+
+        // Let's recheck math.
+        // amountIn = 50,000 USDY.
+        // amountOut ~ 33 REIT. (33e18).
+        // 50,000e18 <= 1050 * 33e18 = 34,650e18. FALSE.
+        // Revert "Price above 1050".
+
+        vm.expectRevert("Price above 1050");
+        swap.swap(address(usdy), 50_000 ether, 0);
+
+        vm.stopPrank();
     }
 }
